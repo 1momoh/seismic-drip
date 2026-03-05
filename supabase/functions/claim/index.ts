@@ -124,7 +124,7 @@ serve(async (req) => {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const contractWithSigner = contract.connect(wallet);
 
-    const tx = await contractWithSigner.claim(walletAddress);
+    const tx = await contractWithSigner.claim(walletAddress, { gasLimit: 100000 });
     await tx.wait();
 
     // Record claim
