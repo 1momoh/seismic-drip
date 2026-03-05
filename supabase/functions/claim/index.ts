@@ -30,8 +30,15 @@ serve(async (req) => {
     // Dynamic import ethers
     const { ethers } = await import("https://esm.sh/ethers@5.7.2");
 
+    if (!CONTRACT_ADDRESS) {
+      return new Response(
+        JSON.stringify({ success: false, message: "Faucet contract not configured" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-    const contract = new ethers.Contract(CONTRACT_ADDRESS!, FAUCET_ABI, provider);
+    const contract = new ethers.Contract(CONTRACT_ADDRESS, FAUCET_ABI, provider);
 
     // Handle balance query
     if (action === "balance") {
