@@ -6,35 +6,37 @@ import { supabase } from "@/integrations/supabase/client";
 const DonateSection = () => {
   const [copied, setCopied] = useState(false);
   const [balance, setBalance] = useState<string | null>(null);
+  const [donateAddress, setDonateAddress] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchBalance = async () => {
+    const fetchInfo = async () => {
       try {
-        const { data } = await supabase.functions.invoke("claim", {
-          body: { action: "balance" },
-        });
-        if (data?.balance) setBalance(data.balance);
+        const [balRes, addrRes] = await Promise.all([
+          supabase.functions.invoke("claim", { body: { action: "balance" } }),
+          supabase.functions.invoke("claim", { body: { action: "address" } }),
+        ]);
+        if (balRes.data?.balance) setBalance(balRes.data.balance);
+        if (addrRes.data?.address) setDonateAddress(addrRes.data.address);
       } catch {}
     };
-    fetchBalance();
-    const interval = setInterval(fetchBalance, 30000);
+
+    fetchInfo();
+    const interval = setInterval(async () => {
+      try {
+        const { data } = await supabase.functions.invoke("claim", { body: { action: "balance" } });
+        if (data?.balance) setBalance(data.balance);
+      } catch {}
+    }, 30000);
+
     return () => clearInterval(interval);
   }, []);
 
-  const contractAddress = "Loading...";
-
   const handleCopy = async () => {
-    if (balance === null) return;
+    if (!donateAddress) return;
     try {
-      // We'll get the address from the balance call
-      const { data } = await supabase.functions.invoke("claim", {
-        body: { action: "address" },
-      });
-      if (data?.address) {
-        await navigator.clipboard.writeText(data.address);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }
+      await navigator.clipboard.writeText(donateAddress);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     } catch {}
   };
 
@@ -69,7 +71,8 @@ const DonateSection = () => {
         whileHover={{ scale: 1.02 }}
         whileTap={{ scale: 0.98 }}
         onClick={handleCopy}
-        className="w-full mt-4 py-3 rounded-xl font-semibold text-sm bg-secondary text-secondary-foreground hover:bg-muted transition-all flex items-center justify-center gap-2"
+        disabled={!donateAddress}
+        className="w-full mt-4 py-3 rounded-xl font-semibold text-sm bg-secondary text-secondary-foreground hover:bg-muted transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {copied ? (
           <>
