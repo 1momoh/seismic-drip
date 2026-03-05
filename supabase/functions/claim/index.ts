@@ -7,7 +7,6 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// Minimal ABI for faucet contract
 const FAUCET_ABI = [
   "function claim(address to) external",
   "function faucetBalance() external view returns (uint256)",
@@ -27,7 +26,7 @@ serve(async (req) => {
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Guard early — before any contract usage
+    // Guard early
     if (!CONTRACT_ADDRESS) {
       return new Response(
         JSON.stringify({ success: false, message: "Faucet contract not configured" }),
@@ -35,13 +34,13 @@ serve(async (req) => {
       );
     }
 
-    // Dynamic import ethers
     const { ethers } = await import("https://esm.sh/ethers@5.7.2");
 
     const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
+
+    // Read-only contract (no signer)
     const contract = new ethers.Contract(CONTRACT_ADDRESS, FAUCET_ABI, provider);
 
-    // Handle balance query
     if (action === "balance") {
       const bal = await contract.faucetBalance();
       return new Response(
@@ -50,7 +49,6 @@ serve(async (req) => {
       );
     }
 
-    // Handle address query
     if (action === "address") {
       return new Response(
         JSON.stringify({ address: CONTRACT_ADDRESS }),
@@ -66,17 +64,15 @@ serve(async (req) => {
       );
     }
 
-    // Check IP cooldown
     const clientIP =
       req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
       req.headers.get("cf-connecting-ip") ||
       "unknown";
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-    // Check IP cooldown
+    // IP cooldown check
     const { data: ipClaims } = await supabase
       .from("ip_claims")
       .select("claimed_at")
@@ -95,7 +91,7 @@ serve(async (req) => {
       );
     }
 
-    // Check wallet cooldown
+    // Wallet cooldown check
     const { data: walletClaims } = await supabase
       .from("ip_claims")
       .select("claimed_at")
@@ -114,7 +110,6 @@ serve(async (req) => {
       );
     }
 
-    // Send claim transaction
     if (!PRIVATE_KEY) {
       return new Response(
         JSON.stringify({ success: false, message: "Faucet not configured" }),
@@ -122,43 +117,41 @@ serve(async (req) => {
       );
     }
 
-    const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-    const contractWithSigner = contract.connect(wallet);
-
-    // Dry-run first so contract reverts return useful messages without sending a tx
+    // Dry-run using read-only contract (no signer) so revert reason is accurate
     try {
-      await contractWithSigner.callStatic.claim(walletAddress);
+      await contract.callStatic.claim(walletAddress);
     } catch (simErr: any) {
       const rawSimMsg =
         simErr?.error?.message ||
         simErr?.data?.message ||
         simErr?.reason ||
         simErr?.message ||
-        "Claim rejected by faucet contract";
+        "Claim rejected by contract";
 
-      const isGenericRevert = /execution reverted|transaction failed/i.test(rawSimMsg);
-      const simMsg = isGenericRevert
-        ? "Claim rejected by faucet contract (likely cooldown or ineligible wallet)"
-        : rawSimMsg;
+      console.error("callStatic revert reason:", rawSimMsg);
 
-      const isCooldown = /cooldown|already claimed|try again|wait|execution reverted|transaction failed/i.test(rawSimMsg);
+      const isCooldown = /cooldown|already claimed|try again|wait/i.test(rawSimMsg);
 
       return new Response(
         JSON.stringify({
           success: false,
           cooldown: isCooldown,
-          message: simMsg,
+          message: rawSimMsg,
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // Send real transaction
+    const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+    const contractWithSigner = contract.connect(wallet);
 
     const tx = await contractWithSigner.claim(walletAddress, { gasLimit: 100000 });
     const receipt = await tx.wait();
 
     if (!receipt || receipt.status !== 1) {
       return new Response(
-        JSON.stringify({ success: false, message: "Claim transaction reverted" }),
+        JSON.stringify({ success: false, message: "Claim transaction reverted on-chain" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -181,22 +174,23 @@ serve(async (req) => {
     console.error("Claim error:", err);
 
     const rawMessage =
-      err?.error?.message || err?.data?.message || err?.reason || err?.message || "Transaction failed";
+      err?.error?.message ||
+      err?.data?.message ||
+      err?.reason ||
+      err?.message ||
+      "Transaction failed";
+
+    const isCooldown = /cooldown|already claimed|try again|wait/i.test(rawMessage);
 
     const isExpectedContractFailure =
       ["CALL_EXCEPTION", "UNPREDICTABLE_GAS_LIMIT", "INSUFFICIENT_FUNDS"].includes(err?.code) ||
       /revert|execution reverted|transaction failed|already claimed|cooldown|insufficient/i.test(rawMessage);
 
-    const isCooldown = /cooldown|already claimed|try again|wait|execution reverted|transaction failed/i.test(rawMessage);
-    const message = /execution reverted|transaction failed/i.test(rawMessage)
-      ? "Claim rejected by faucet contract (likely cooldown or ineligible wallet)"
-      : rawMessage;
-
     return new Response(
       JSON.stringify({
         success: false,
         cooldown: isCooldown,
-        message,
+        message: rawMessage,
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
