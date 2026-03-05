@@ -27,15 +27,16 @@ serve(async (req) => {
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Dynamic import ethers
-    const { ethers } = await import("https://esm.sh/ethers@5.7.2");
-
+    // Guard early — before any contract usage
     if (!CONTRACT_ADDRESS) {
       return new Response(
         JSON.stringify({ success: false, message: "Faucet contract not configured" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // Dynamic import ethers
+    const { ethers } = await import("https://esm.sh/ethers@5.7.2");
 
     const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
     const contract = new ethers.Contract(CONTRACT_ADDRESS, FAUCET_ABI, provider);
