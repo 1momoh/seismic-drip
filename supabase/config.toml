@@ -1,0 +1,4 @@
+project_id = "busxddxwbjwxhohereyh"
+
+[functions.claim]
+verify_jwt = false
