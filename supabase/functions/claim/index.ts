@@ -26,7 +26,6 @@ serve(async (req) => {
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Guard early
     if (!CONTRACT_ADDRESS) {
       return new Response(
         JSON.stringify({ success: false, message: "Faucet contract not configured" }),
@@ -37,8 +36,6 @@ serve(async (req) => {
     const { ethers } = await import("https://esm.sh/ethers@5.7.2");
 
     const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-
-    // Read-only contract (no signer)
     const contract = new ethers.Contract(CONTRACT_ADDRESS, FAUCET_ABI, provider);
 
     if (action === "balance") {
@@ -56,7 +53,6 @@ serve(async (req) => {
       );
     }
 
-    // Validate wallet address
     if (!walletAddress || !ethers.utils.isAddress(walletAddress)) {
       return new Response(
         JSON.stringify({ success: false, message: "Invalid wallet address" }),
@@ -72,7 +68,6 @@ serve(async (req) => {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-    // IP cooldown check
     const { data: ipClaims } = await supabase
       .from("ip_claims")
       .select("claimed_at")
@@ -82,16 +77,11 @@ serve(async (req) => {
 
     if (ipClaims && ipClaims.length > 0) {
       return new Response(
-        JSON.stringify({
-          success: false,
-          cooldown: true,
-          message: "Try again in 24h (IP cooldown)",
-        }),
+        JSON.stringify({ success: false, cooldown: true, message: "Try again in 24h (IP cooldown)" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Wallet cooldown check
     const { data: walletClaims } = await supabase
       .from("ip_claims")
       .select("claimed_at")
@@ -101,101 +91,68 @@ serve(async (req) => {
 
     if (walletClaims && walletClaims.length > 0) {
       return new Response(
-        JSON.stringify({
-          success: false,
-          cooldown: true,
-          message: "Try again in 24h (wallet cooldown)",
-        }),
+        JSON.stringify({ success: false, cooldown: true, message: "Try again in 24h (wallet cooldown)" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     if (!PRIVATE_KEY) {
       return new Response(
-        JSON.stringify({ success: false, message: "Faucet not configured" }),
+        JSON.stringify({ success: false, message: "Faucet private key not configured" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Dry-run using read-only contract (no signer) so revert reason is accurate
-    try {
-      await contract.callStatic.claim(walletAddress);
-    } catch (simErr: any) {
-      const rawSimMsg =
-        simErr?.error?.message ||
-        simErr?.data?.message ||
-        simErr?.reason ||
-        simErr?.message ||
-        "Claim rejected by contract";
-
-      console.error("callStatic revert reason:", rawSimMsg);
-
-      const isCooldown = /cooldown|already claimed|try again|wait/i.test(rawSimMsg);
-
-      return new Response(
-        JSON.stringify({
-          success: false,
-          cooldown: isCooldown,
-          message: rawSimMsg,
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Send real transaction
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const contractWithSigner = contract.connect(wallet);
 
-    const tx = await contractWithSigner.claim(walletAddress, { gasLimit: 100000 });
+    let tx;
+    try {
+      tx = await contractWithSigner.claim(walletAddress, { gasLimit: 100000 });
+    } catch (txErr: any) {
+      const msg =
+        txErr?.error?.message ||
+        txErr?.data?.message ||
+        txErr?.reason ||
+        txErr?.message ||
+        "Transaction failed";
+      const isCooldown = /cooldown|already claimed|try again|wait/i.test(msg);
+      return new Response(
+        JSON.stringify({ success: false, cooldown: isCooldown, message: msg }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const receipt = await tx.wait();
 
     if (!receipt || receipt.status !== 1) {
       return new Response(
-        JSON.stringify({ success: false, message: "Claim transaction reverted on-chain" }),
+        JSON.stringify({ success: false, message: "Transaction reverted on-chain" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Record claim
     await supabase.from("ip_claims").insert({
       ip_address: clientIP,
       wallet_address: walletAddress.toLowerCase(),
     });
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        txHash: tx.hash,
-        message: "Success!",
-      }),
+      JSON.stringify({ success: true, txHash: tx.hash, message: "Success!" }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-  } catch (err: any) {
-    console.error("Claim error:", err);
 
-    const rawMessage =
+  } catch (err: any) {
+    const msg =
       err?.error?.message ||
       err?.data?.message ||
       err?.reason ||
       err?.message ||
-      "Transaction failed";
-
-    const isCooldown = /cooldown|already claimed|try again|wait/i.test(rawMessage);
-
-    const isExpectedContractFailure =
-      ["CALL_EXCEPTION", "UNPREDICTABLE_GAS_LIMIT", "INSUFFICIENT_FUNDS"].includes(err?.code) ||
-      /revert|execution reverted|transaction failed|already claimed|cooldown|insufficient/i.test(rawMessage);
-
+      "Unexpected error";
+    const isCooldown = /cooldown|already claimed|try again|wait/i.test(msg);
     return new Response(
-      JSON.stringify({
-        success: false,
-        cooldown: isCooldown,
-        message: rawMessage,
-      }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: isExpectedContractFailure ? 200 : 500,
-      }
+      JSON.stringify({ success: false, cooldown: isCooldown, message: msg }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
