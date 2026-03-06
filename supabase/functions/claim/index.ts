@@ -111,6 +111,7 @@ serve(async (req) => {
     try {
       tx = await contractWithSigner.claim(walletAddress, { gasLimit: 100000 });
     } catch (txErr: any) {
+      console.error("Claim tx error:", JSON.stringify(txErr, Object.getOwnPropertyNames(txErr), 2));
       const msg =
         txErr?.error?.message ||
         txErr?.data?.message ||
@@ -144,6 +145,7 @@ serve(async (req) => {
     );
 
   } catch (err: any) {
+    console.error("Claim handler error:", JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
     const msg =
       err?.error?.message ||
       err?.data?.message ||
